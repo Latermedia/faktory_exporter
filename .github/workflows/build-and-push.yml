@@ -1,0 +1,91 @@
+name: Build and Push
+
+on:
+  push:
+    branches: [master]
+  pull_request: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_ECR_ROLE_ARN: arn:aws:iam::538122211141:role/GithubPushContainer
+  ECR_REGISTRY: 538122211141.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: faktory-exporter
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: go build
+        run: go build -v ./...
+
+      - name: go test
+        run: go test -v ./...
+
+  docker:
+    name: Docker Build, Scan, and Push
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build image locally
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: docker build -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG .
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+
+      - name: Configure AWS credentials
+        if: github.ref == 'refs/heads/master'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ env.AWS_ECR_ROLE_ARN }}
+          role-session-name: ${{ env.ECR_REPOSITORY }}
+
+      - name: Login to Amazon ECR
+        if: github.ref == 'refs/heads/master'
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: '538122211141'
+
+      - name: Skip push if image tag already exists
+        if: github.ref == 'refs/heads/master'
+        id: check
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          if docker manifest inspect ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Image $IMAGE_TAG already in ECR — skipping push."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push to ECR
+        if: github.ref == 'refs/heads/master' && steps.check.outputs.exists == 'false'
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
