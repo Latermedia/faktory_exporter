@@ -1,0 +1,7 @@
+# CVE-2022-21698: Denial of service in prometheus/client_golang
+# InstrumentHandlerCounter. The fork pins client_golang to v0.8.0 via the
+# `replace` directive in go.mod, so the fix (v1.11.1) is not pulled. However,
+# this exporter exposes metrics via `promhttp.HandlerFor` and never calls the
+# affected `InstrumentHandlerCounter`, so the vulnerability is not reachable.
+# Revisit once the prometheus/client_golang upgrade in go.mod lands.
+CVE-2022-21698
